@@ -85,15 +85,16 @@ func ConvertCliResponseToOpenAI(_ context.Context, _ string, originalRequestRawJ
 
 	// Extract and set usage metadata (token counts).
 	if usageResult := gjson.GetBytes(rawJSON, "response.usageMetadata"); usageResult.Exists() {
-		if candidatesTokenCountResult := usageResult.Get("candidatesTokenCount"); candidatesTokenCountResult.Exists() {
-			template, _ = sjson.Set(template, "usage.completion_tokens", candidatesTokenCountResult.Int())
-		}
+		candidatesTokenCount := usageResult.Get("candidatesTokenCount").Int()
+		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
+		// Include thinking tokens in completion_tokens (they are output, not input)
+		completionTokens := candidatesTokenCount + thoughtsTokenCount
+		template, _ = sjson.Set(template, "usage.completion_tokens", completionTokens)
 		if totalTokenCountResult := usageResult.Get("totalTokenCount"); totalTokenCountResult.Exists() {
 			template, _ = sjson.Set(template, "usage.total_tokens", totalTokenCountResult.Int())
 		}
 		promptTokenCount := usageResult.Get("promptTokenCount").Int()
-		thoughtsTokenCount := usageResult.Get("thoughtsTokenCount").Int()
-		template, _ = sjson.Set(template, "usage.prompt_tokens", promptTokenCount+thoughtsTokenCount)
+		template, _ = sjson.Set(template, "usage.prompt_tokens", promptTokenCount)
 		if thoughtsTokenCount > 0 {
 			template, _ = sjson.Set(template, "usage.completion_tokens_details.reasoning_tokens", thoughtsTokenCount)
 		}
