@@ -127,7 +127,48 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 			if partTextResult.Exists() {
 				// Process thinking content (internal reasoning)
 				if partResult.Get("thought").Bool() {
-					if thoughtSignature := partResult.Get("thoughtSignature"); thoughtSignature.Exists() && thoughtSignature.String() != "" {
+					textContent := partTextResult.String()
+
+					// First emit the thinking text content (if any)
+					if textContent != "" {
+						if params.ResponseType == 2 {
+							// Continue existing thinking block
+							params.CurrentThinkingText.WriteString(textContent)
+							output = output + "event: content_block_delta\n"
+							data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex), "delta.thinking", textContent)
+							output = output + fmt.Sprintf("data: %s\n\n\n", data)
+							params.HasContent = true
+						} else {
+							// Transition from another state to thinking
+							// First, close any existing content block
+							if params.ResponseType != 0 {
+								output = output + "event: content_block_stop\n"
+								output = output + fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, params.ResponseIndex)
+								output = output + "\n\n\n"
+								params.ResponseIndex++
+							}
+
+							// Start a new thinking content block
+							output = output + "event: content_block_start\n"
+							output = output + fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex)
+							output = output + "\n\n\n"
+							output = output + "event: content_block_delta\n"
+							data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex), "delta.thinking", textContent)
+							output = output + fmt.Sprintf("data: %s\n\n\n", data)
+							params.ResponseType = 2 // Set state to thinking
+							params.HasContent = true
+							// Start accumulating thinking text for signature caching
+							params.CurrentThinkingText.Reset()
+							params.CurrentThinkingText.WriteString(textContent)
+						}
+					}
+
+					// Then check for thoughtSignature and emit signature_delta if present
+					thoughtSignature := partResult.Get("thoughtSignature")
+					if !thoughtSignature.Exists() {
+						thoughtSignature = partResult.Get("thought_signature")
+					}
+					if thoughtSignature.Exists() && thoughtSignature.String() != "" {
 						log.Debug("Branch: signature_delta")
 
 						if params.SessionID != "" && params.CurrentThinkingText.Len() > 0 {
@@ -140,39 +181,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 						data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":""}}`, params.ResponseIndex), "delta.signature", thoughtSignature.String())
 						output = output + fmt.Sprintf("data: %s\n\n\n", data)
 						params.HasContent = true
-					} else if params.ResponseType == 2 { // Continue existing thinking block if already in thinking state
-						params.CurrentThinkingText.WriteString(partTextResult.String())
-						output = output + "event: content_block_delta\n"
-						data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex), "delta.thinking", partTextResult.String())
-						output = output + fmt.Sprintf("data: %s\n\n\n", data)
-						params.HasContent = true
-					} else {
-						// Transition from another state to thinking
-						// First, close any existing content block
-						if params.ResponseType != 0 {
-							if params.ResponseType == 2 {
-								// output = output + "event: content_block_delta\n"
-								// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
-								// output = output + "\n\n\n"
-							}
-							output = output + "event: content_block_stop\n"
-							output = output + fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, params.ResponseIndex)
-							output = output + "\n\n\n"
-							params.ResponseIndex++
-						}
-
-						// Start a new thinking content block
-						output = output + "event: content_block_start\n"
-						output = output + fmt.Sprintf(`data: {"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`, params.ResponseIndex)
-						output = output + "\n\n\n"
-						output = output + "event: content_block_delta\n"
-						data, _ := sjson.Set(fmt.Sprintf(`{"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":""}}`, params.ResponseIndex), "delta.thinking", partTextResult.String())
-						output = output + fmt.Sprintf("data: %s\n\n\n", data)
-						params.ResponseType = 2 // Set state to thinking
-						params.HasContent = true
-						// Start accumulating thinking text for signature caching
-						params.CurrentThinkingText.Reset()
-						params.CurrentThinkingText.WriteString(partTextResult.String())
 					}
 				} else {
 					finishReasonResult := gjson.GetBytes(rawJSON, "response.candidates.0.finishReason")
@@ -188,11 +196,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 							// Transition from another state to text content
 							// First, close any existing content block
 							if params.ResponseType != 0 {
-								if params.ResponseType == 2 {
-									// output = output + "event: content_block_delta\n"
-									// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
-									// output = output + "\n\n\n"
-								}
 								output = output + "event: content_block_stop\n"
 								output = output + fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, params.ResponseIndex)
 								output = output + "\n\n\n"
@@ -226,13 +229,6 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 					output = output + "\n\n\n"
 					params.ResponseIndex++
 					params.ResponseType = 0
-				}
-
-				// Special handling for thinking state transition
-				if params.ResponseType == 2 {
-					// output = output + "event: content_block_delta\n"
-					// output = output + fmt.Sprintf(`data: {"type":"content_block_delta","index":%d,"delta":{"type":"signature_delta","signature":null}}`, params.ResponseIndex)
-					// output = output + "\n\n\n"
 				}
 
 				// Close any other existing content block
